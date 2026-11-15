@@ -88,11 +88,13 @@ export const useAgentStore = create<AgentState>((set, get) => ({
                 },
                 sendingMessage: false,
             }));
-        } catch {
+        } catch (error) {
             const errorMsg: Message = {
                 id: `error-${Date.now()}`,
                 type: 'agent',
-                content: "⚠️ I encountered an error while trying to process your request. Please check if the backend is running.",
+                content: error instanceof Error
+                    ? `⚠️ ${error.message}`
+                    : '⚠️ The request failed. Check the backend connection and server logs.',
                 timestamp: new Date().toISOString(),
             };
             set((state) => ({
