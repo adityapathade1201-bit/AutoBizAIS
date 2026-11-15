@@ -3,15 +3,14 @@
  */
 
 import type { Agent, Conversation, BusinessMetrics, ChartPoint, Recommendation, MarketplaceAgent, OnboardingConfig, OnboardingData } from '../types';
+import { apiUrl } from './config';
 
-// Set this to false so it tries backend first, and falls back to JSON if backend endpoint missing
+// Public endpoints are configured through VITE_API_BASE; no temporary tunnel is hardcoded.
 const USE_MOCK = false;
 
-const API_BASE = 'https://trimester-outnumber-unbolted.ngrok-free.dev/api';
-
 /**
- * Smart Fetch: Tries Backend API first. 
- * If backend fails or endpoint doesn't exist, automatically loads local bundled JSON!
+ * Smart Fetch: Tries Backend API first.
+ * If a read endpoint is unavailable, it can load the bundled static JSON.
  */
 async function fetchJSON<T>(path: string, fallbackJsonPath?: string): Promise<T> {
     try {
@@ -45,7 +44,7 @@ export const api = {
             return data.agents;
         }
         try {
-            const data = await fetchJSON<{ agents: Agent[] }>(`${API_BASE}/agents`, '/data/agents.json');
+            const data = await fetchJSON<{ agents: Agent[] }>(apiUrl('/agents'), '/data/agents.json');
             return data.agents || data;
         } catch {
             const data = await fetchJSON<{ agents: Agent[] }>('/data/agents.json');
@@ -60,7 +59,7 @@ export const api = {
             return data.conversations[agentId] || null;
         }
         try {
-            const data = await fetchJSON<{ conversations: Record<string, Conversation> }>(`${API_BASE}/chat/${agentId}`, '/data/chat-history.json');
+            const data = await fetchJSON<{ conversations: Record<string, Conversation> }>(apiUrl(`/chat/${encodeURIComponent(agentId)}`), '/data/chat-history.json');
             return data.conversations ? (data.conversations[agentId] || null) : (data as any);
         } catch {
             const data = await fetchJSON<{ conversations: Record<string, Conversation> }>('/data/chat-history.json');
@@ -70,24 +69,42 @@ export const api = {
 
     /** Send a message to an agent — returns the agent's reply */
     sendMessage: async (agentId: string, message: string): Promise<{ reply: string; toolExecution?: { tool: string; content: string } }> => {
+        // Never fake an AI response when the backend is unavailable. Surface the real failure.
+        const endpoint = apiUrl('/chat');
+        let res: Response;
         try {
-            const res = await fetch(`${API_BASE}/chat`, {
+            res = await fetch(endpoint, {
                 method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'ngrok-skip-browser-warning': 'true'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ agent_id: agentId, message }),
             });
-            if (!res.ok) throw new Error("API failed");
-            return await res.json();
-        } catch {
-            // Fallback response if backend chat POST fails
-            await new Promise(r => setTimeout(r, 1000));
-            return {
-                reply: `[AutoBiz AI Agent] I received your message: "${message}". Processed via fallback pipeline.`,
-            };
+        } catch (error) {
+            if (error instanceof TypeError) {
+                throw new Error(`Cannot reach the AutoBiz AI backend at ${endpoint}. Check the backend deployment, internet connection, and CORS configuration.`);
+            }
+            throw error;
         }
+
+        const responseText = await res.text();
+        let payload: { reply?: unknown; detail?: unknown; message?: unknown } = {};
+        try {
+            payload = responseText ? JSON.parse(responseText) as typeof payload : {};
+        } catch {
+            // Keep the HTTP status as the useful diagnostic for non-JSON proxy responses.
+        }
+
+        if (!res.ok) {
+            const detail = typeof payload.detail === 'string'
+                ? payload.detail
+                : typeof payload.message === 'string' ? payload.message : responseText;
+            throw new Error(`Backend returned HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+        }
+
+        if (typeof payload.reply !== 'string' || !payload.reply.trim()) {
+            throw new Error('The backend responded without an AI reply. Check the backend logs and OpenRouter configuration.');
+        }
+
+        return payload as { reply: string; toolExecution?: { tool: string; content: string } };
     },
 
     // ──────────────────────── Business ────────────────────────
@@ -95,7 +112,7 @@ export const api = {
     /** Get business metrics */
     getMetrics: async (): Promise<BusinessMetrics> => {
         try {
-            const data = await fetchJSON<{ metrics: BusinessMetrics }>(`${API_BASE}/business/metrics`, '/data/business-metrics.json');
+            const data = await fetchJSON<{ metrics: BusinessMetrics }>(apiUrl('/business/metrics'), '/data/business-metrics.json');
             return data.metrics || data;
         } catch {
             const data = await fetchJSON<{ metrics: BusinessMetrics }>('/data/business-metrics.json');
@@ -106,7 +123,7 @@ export const api = {
     /** Get chart data */
     getChartData: async (): Promise<Record<string, ChartPoint[]>> => {
         try {
-            const data = await fetchJSON<{ chartData: Record<string, ChartPoint[]> }>(`${API_BASE}/business/charts`, '/data/business-metrics.json');
+            const data = await fetchJSON<{ chartData: Record<string, ChartPoint[]> }>(apiUrl('/business/charts'), '/data/business-metrics.json');
             return data.chartData || data;
         } catch {
             const data = await fetchJSON<{ chartData: Record<string, ChartPoint[]> }>('/data/business-metrics.json');
@@ -117,7 +134,7 @@ export const api = {
     /** Get AI recommendations */
     getRecommendations: async (): Promise<Recommendation[]> => {
         try {
-            const data = await fetchJSON<{ ai_recommendations: Recommendation[] }>(`${API_BASE}/business/recommendations`, '/data/business-metrics.json');
+            const data = await fetchJSON<{ ai_recommendations: Recommendation[] }>(apiUrl('/business/recommendations'), '/data/business-metrics.json');
             return data.ai_recommendations || data;
         } catch {
             const data = await fetchJSON<{ ai_recommendations: Recommendation[] }>('/data/business-metrics.json');
@@ -130,7 +147,7 @@ export const api = {
     /** Get marketplace agents */
     getMarketplaceAgents: async (): Promise<MarketplaceAgent[]> => {
         try {
-            const data = await fetchJSON<{ featured_agents: MarketplaceAgent[] }>(`${API_BASE}/marketplace`, '/data/marketplace-agents.json');
+            const data = await fetchJSON<{ featured_agents: MarketplaceAgent[] }>(apiUrl('/marketplace'), '/data/marketplace-agents.json');
             return data.featured_agents || data;
         } catch {
             const data = await fetchJSON<{ featured_agents: MarketplaceAgent[] }>('/data/marketplace-agents.json');
@@ -141,7 +158,7 @@ export const api = {
     /** Get marketplace categories */
     getCategories: async (): Promise<string[]> => {
         try {
-            const data = await fetchJSON<{ categories: string[] }>(`${API_BASE}/marketplace/categories`, '/data/marketplace-agents.json');
+            const data = await fetchJSON<{ categories: string[] }>(apiUrl('/marketplace/categories'), '/data/marketplace-agents.json');
             return data.categories || data;
         } catch {
             const data = await fetchJSON<{ categories: string[] }>('/data/marketplace-agents.json');
@@ -159,9 +176,9 @@ export const api = {
     /** Analyze business data */
     analyzeBusiness: async (_data: OnboardingData): Promise<{ summary: string; recommended_agents: Array<{ agent_id: string; reason: string }> }> => {
         try {
-            const res = await fetch(`${API_BASE}/onboarding/analyze`, {
+            const res = await fetch(apiUrl('/onboarding/analyze'), {
                 method: 'POST',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/json',
                     'ngrok-skip-browser-warning': 'true'
                 },
@@ -180,10 +197,10 @@ export const api = {
         try {
             const formData = new FormData();
             _files.forEach(f => formData.append('files', f));
-            const res = await fetch(`${API_BASE}/upload`, { 
-                method: 'POST', 
+            const res = await fetch(apiUrl('/upload'), {
+                method: 'POST',
                 headers: { 'ngrok-skip-browser-warning': 'true' },
-                body: formData 
+                body: formData
             });
             if (!res.ok) throw new Error("API failed");
             return await res.json();
@@ -197,9 +214,9 @@ export const api = {
     /** Create a new custom agent */
     createAgent: async (config: Partial<Agent>): Promise<Agent> => {
         try {
-            const res = await fetch(`${API_BASE}/agents/create`, {
+            const res = await fetch(apiUrl('/agents/create'), {
                 method: 'POST',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/json',
                     'ngrok-skip-browser-warning': 'true'
                 },
@@ -215,9 +232,9 @@ export const api = {
     /** Update agent settings */
     updateAgentSettings: async (id: string, settings: Partial<Agent>): Promise<Agent> => {
         try {
-            const res = await fetch(`${API_BASE}/agents/${id}`, {
+            const res = await fetch(apiUrl(`/agents/${encodeURIComponent(id)}`), {
                 method: 'PUT',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/json',
                     'ngrok-skip-browser-warning': 'true'
                 },
