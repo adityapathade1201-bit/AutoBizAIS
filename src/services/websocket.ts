@@ -7,6 +7,7 @@ class WebSocketService {
   private listeners: MessageListener[] = [];
   private readonly reconnectInterval = 3000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingMessages: string[] = [];
 
   connect() {
     if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return;
@@ -38,6 +39,10 @@ class WebSocketService {
 
     this.socket.onopen = () => {
       console.log('AutoBiz AI WebSocket connected:', wsUrl);
+      // Deliver events queued while the connection was offline.
+      while (this.pendingMessages.length > 0 && this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.send(this.pendingMessages.shift()!);
+      }
     };
 
     this.socket.onmessage = (event) => {
@@ -69,12 +74,14 @@ class WebSocketService {
   }
 
   send(data: object) {
+    const serialized = JSON.stringify(data);
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify(data));
+      this.socket.send(serialized);
       return;
     }
 
-    console.warn('WebSocket is not connected. The live-feed message was not sent.');
+    this.pendingMessages.push(serialized);
+    console.warn('WebSocket is not connected. Message queued until reconnection.');
     this.connect();
   }
 
